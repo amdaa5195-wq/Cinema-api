@@ -12,10 +12,7 @@
  * other anti-bot/security controls, and it does not proxy protected media.
  */
 
-const ALLOWED_ORIGINS = [
-  // Put your exact site origin here after confirming it works:
-  "https://www.cinema.gleeze.com",
-];
+const ALLOWED_ORIGINS = [];
 
 const SOURCE_HOSTS = new Set(["akwam.ss", "www.akwam.ss"]);
 const CACHE_SECONDS = 120;
