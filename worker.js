@@ -25,13 +25,11 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders(request) });
     }
 
-    const action = url.searchParams.get("action") || "";
-
-    if ((url.pathname === "/" || url.pathname === "/health") && !action) {
+    if (url.pathname === "/" || url.pathname === "/health") {
       return json({
         status: "success",
         service: "Cinema+ API",
-        version: "2.2",
+        version: "2.0",
         source: "https://akwam.ss/",
         actions: ["genre", "search", "series"],
       }, 200, request);
@@ -42,6 +40,8 @@ export default {
     }
 
     try {
+      const action = url.searchParams.get("action") || "";
+
       if (action === "genre") {
         const raw = url.searchParams.get("genre") || "";
         if (!raw) return json({ status: "error", message: "Missing genre" }, 400, request);
