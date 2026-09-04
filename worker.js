@@ -12,7 +12,10 @@
  * other anti-bot/security controls, and it does not proxy protected media.
  */
 
-const ALLOWED_ORIGINS = [];
+const ALLOWED_ORIGINS = [
+  // Put your exact site origin here after confirming it works:
+  "https://www.cinema.gleeze.com",
+];
 
 const SOURCE_HOSTS = new Set(["akwam.ss", "www.akwam.ss"]);
 const CACHE_SECONDS = 120;
@@ -25,16 +28,11 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders(request) });
     }
 
-    // The Worker endpoint is "/" for both health checks and API actions.
-    // Therefore "/" must NOT return the health response when ?action=... is present.
-    // Read the action first, then use the health response only when no action was supplied.
-    const action = url.searchParams.get("action") || "";
-
-    if ((url.pathname === "/" || url.pathname === "/health") && !action) {
+    if (url.pathname === "/" || url.pathname === "/health") {
       return json({
         status: "success",
         service: "Cinema+ API",
-        version: "2.1",
+        version: "2.0",
         source: "https://akwam.ss/",
         actions: ["genre", "search", "series"],
       }, 200, request);
@@ -45,6 +43,8 @@ export default {
     }
 
     try {
+      const action = url.searchParams.get("action") || "";
+
       if (action === "genre") {
         const raw = url.searchParams.get("genre") || "";
         if (!raw) return json({ status: "error", message: "Missing genre" }, 400, request);
@@ -251,101 +251,88 @@ async function parseListing(html, baseUrl) {
   const results = [];
   const seen = new Set();
 
-  let current = null;
-  let captureTitle = false;
+  // HTMLRewriter in Cloudflare Workers uses transform(response);
+  // it does not provide rw.write()/rw.end(). To avoid that runtime error,
+  // this parser works directly on the returned HTML.
 
-  const rw = new HTMLRewriter()
-    .on("div", {
-      element(el) {
-        const cls = el.getAttribute("class") || "";
-        if (!hasClass(cls, "entry-box")) return;
+  const cardRe =
+    /<div[^>]*class=["'][^"']*\bentry-box\b[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*<\/div>/gi;
 
-        current = {
-          title: "",
-          img: "",
-          href: "",
-          is_series: false,
-        };
+  let cardMatch;
 
-        el.onEndTag(() => {
-          if (!current) return;
+  while ((cardMatch = cardRe.exec(html))) {
+    const block = cardMatch[1];
 
-          const href = current.href;
-          const title = cleanText(current.title);
+    const linkMatch =
+      block.match(/<a\b[^>]*class=["'][^"']*\bbox\b[^"']*["'][^>]*href=["']([^"']+)["']/i) ||
+      block.match(/<a\b[^>]*href=["']([^"']+)["'][^>]*class=["'][^"']*\bbox\b[^"']*["']/i);
 
-          if (href && title && !seen.has(href)) {
-            const path = safeUrlPath(href);
-            const isSeries = /^\/series(?:\/|$)/i.test(path);
-            const isMovie =
-              /^\/movie(?:\/|$)/i.test(path) ||
-              /^\/movies(?:\/|$)/i.test(path);
+    if (!linkMatch) continue;
 
-            if (isSeries || isMovie) {
-              seen.add(href);
-              results.push({
-                title: title.slice(0, 300),
-                img: current.img || "",
-                href,
-                is_series: isSeries,
-              });
-            }
-          }
+    const href = absolute(linkMatch[1], baseUrl);
+    if (!href || seen.has(href)) continue;
 
-          current = null;
-          captureTitle = false;
-        });
-      },
-    })
-    .on("a", {
-      element(el) {
-        if (!current) return;
+    const titleMatch =
+      block.match(/<h3\b[^>]*class=["'][^"']*\bentry-title\b[^"']*["'][^>]*>([\s\S]*?)<\/h3>/i) ||
+      block.match(/<h3\b[^>]*>([\s\S]*?)<\/h3>/i);
 
-        const cls = el.getAttribute("class") || "";
-        if (!hasClass(cls, "box")) return;
+    const title = cleanText(titleMatch ? titleMatch[1] : "");
 
-        const href = el.getAttribute("href") || "";
-        if (href && !current.href) {
-          current.href = absolute(href, baseUrl);
-        }
-      },
-    })
-    .on("h3", {
-      element(el) {
-        if (!current) return;
+    const imgMatch =
+      block.match(/<img\b[^>]*(?:data-src|data-original|data-lazy-src|src)=["']([^"']+)["'][^>]*>/i);
 
-        const cls = el.getAttribute("class") || "";
-        if (!hasClass(cls, "entry-title")) return;
+    const img = imgMatch ? absolute(imgMatch[1], baseUrl) : "";
 
-        captureTitle = true;
-        el.onEndTag(() => {
-          captureTitle = false;
-        });
-      },
-      text(text) {
-        if (current && captureTitle) {
-          current.title += text.text;
-        }
-      },
-    })
-    .on("img", {
-      element(el) {
-        if (!current || current.img) return;
+    const path = safeUrlPath(href);
+    const isSeries = /^\/series(?:\/|$)/i.test(path);
+    const isMovie =
+      /^\/movie(?:\/|$)/i.test(path) ||
+      /^\/movies(?:\/|$)/i.test(path);
 
-        const src =
-          el.getAttribute("data-src") ||
-          el.getAttribute("data-original") ||
-          el.getAttribute("data-lazy-src") ||
-          el.getAttribute("src") ||
-          "";
+    if (!title || (!isSeries && !isMovie)) continue;
 
-        if (src) current.img = absolute(src, baseUrl);
-      },
+    seen.add(href);
+    results.push({
+      title: title.slice(0, 300),
+      img,
+      href,
+      is_series: isSeries,
     });
 
-  await rw.write(html);
-  await rw.end();
+    if (results.length >= 30) break;
+  }
 
-  return results.slice(0, 30);
+  // Broad fallback for small markup changes.
+  if (!results.length) {
+    const linkRe =
+      /<a\b[^>]*href=["']([^"']+)["'][^>]*>[\s\S]*?<h3\b[^>]*class=["'][^"']*\bentry-title\b[^"']*["'][^>]*>([\s\S]*?)<\/h3>/gi;
+
+    let m;
+    while ((m = linkRe.exec(html)) && results.length < 30) {
+      const href = absolute(m[1], baseUrl);
+      const title = cleanText(m[2]);
+      const path = safeUrlPath(href);
+
+      if (!href || !title || seen.has(href)) continue;
+
+      const isSeries = /^\/series(?:\/|$)/i.test(path);
+      const isMovie =
+        /^\/movie(?:\/|$)/i.test(path) ||
+        /^\/movies(?:\/|$)/i.test(path);
+
+      if (!isSeries && !isMovie) continue;
+
+      seen.add(href);
+      results.push({
+        title: title.slice(0, 300),
+        img: "",
+        href,
+        is_series: isSeries,
+      });
+    }
+  }
+
+  return results;
 }
 
 async function parseDetails(html, baseUrl) {
@@ -389,10 +376,6 @@ async function parseDetails(html, baseUrl) {
     media_src: "",
     is_iframe: false,
   };
-}
-
-function extractEntryBlocks_unused(html) {
-  return [];
 }
 
 function hasClass(value, wanted) {
