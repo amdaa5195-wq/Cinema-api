@@ -12,10 +12,7 @@
  * other anti-bot/security controls, and it does not proxy protected media.
  */
 
-const ALLOWED_ORIGINS = [
-  // Put your exact site origin here after confirming it works:
-  "https://www.cinema.gleeze.com",
-];
+const ALLOWED_ORIGINS = [];
 
 const SOURCE_HOSTS = new Set(["akwam.ss", "www.akwam.ss"]);
 const CACHE_SECONDS = 120;
@@ -28,11 +25,13 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders(request) });
     }
 
-    if (url.pathname === "/" || url.pathname === "/health") {
+    const action = url.searchParams.get("action") || "";
+
+    if ((url.pathname === "/" || url.pathname === "/health") && !action) {
       return json({
         status: "success",
         service: "Cinema+ API",
-        version: "2.0",
+        version: "2.2",
         source: "https://akwam.ss/",
         actions: ["genre", "search", "series"],
       }, 200, request);
@@ -43,8 +42,6 @@ export default {
     }
 
     try {
-      const action = url.searchParams.get("action") || "";
-
       if (action === "genre") {
         const raw = url.searchParams.get("genre") || "";
         if (!raw) return json({ status: "error", message: "Missing genre" }, 400, request);
