@@ -28,11 +28,16 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders(request) });
     }
 
-    if (url.pathname === "/" || url.pathname === "/health") {
+    // The Worker endpoint is "/" for both health checks and API actions.
+    // Therefore "/" must NOT return the health response when ?action=... is present.
+    // Read the action first, then use the health response only when no action was supplied.
+    const action = url.searchParams.get("action") || "";
+
+    if ((url.pathname === "/" || url.pathname === "/health") && !action) {
       return json({
         status: "success",
         service: "Cinema+ API",
-        version: "2.0",
+        version: "2.1",
         source: "https://akwam.ss/",
         actions: ["genre", "search", "series"],
       }, 200, request);
@@ -43,8 +48,6 @@ export default {
     }
 
     try {
-      const action = url.searchParams.get("action") || "";
-
       if (action === "genre") {
         const raw = url.searchParams.get("genre") || "";
         if (!raw) return json({ status: "error", message: "Missing genre" }, 400, request);
