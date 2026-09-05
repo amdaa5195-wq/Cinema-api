@@ -155,6 +155,7 @@ function extractWatchLinks(html) {
 
   const rawRe = /(?:https?:)?(?:\\\/|\/)watch(?:\\\/|\/)[^"'\\\s<>]+/gi;
   while ((m = rawRe.exec(html))) add(m[0]);
+
   return out;
 }
 
@@ -189,31 +190,23 @@ function extractEpisodeLinks(html) {
 function extractEmbeddedMedia(html, baseUrl) {
   const candidates = [];
 
-  function add(raw) {
-    if (!raw) return;
-    const s = String(raw).replace(/\\\//g, "/").replace(/\\u002F/gi, "/").replace(/&amp;/gi, "&").trim();
-    const u = absoluteUrl(s, baseUrl);
-    if (u && /^https?:\/\//i.test(u)) candidates.push(u);
-  }
-
+  // iframe/embed/object sources
   const tagRe = /<(?:iframe|embed|video|source|object)\b[^>]*>/gi;
   let m;
   while ((m = tagRe.exec(html))) {
     const tag = m[0];
-    add(attr(tag, "src"));
-    add(attr(tag, "data-src"));
-    add(attr(tag, "data-url"));
-    add(attr(tag, "data-href"));
-    add(attr(tag, "data"));
+    const src = attr(tag, "src") || attr(tag, "data-src") || attr(tag, "data");
+    const absolute = absoluteUrl(src, baseUrl);
+    if (absolute) candidates.push(absolute);
   }
 
-  const quotedRe = /(?:file|src|source|url|videoUrl|streamUrl|playerUrl|embedUrl)\s*[:=]\s*["'](https?:\/\/[^"']+)["']/gi;
-  while ((m = quotedRe.exec(html))) add(m[1]);
+  // Common JS player configurations
+  const quotedUrlRe = /(?:file|src|source|url|videoUrl|streamUrl)\s*[:=]\s*["'](https?:\/\/[^"']+)["']/gi;
+  while ((m = quotedUrlRe.exec(html))) candidates.push(m[1]);
 
-  const rawMediaRe = /https?:\/\/[^"'\\\s<>]+?\.(?:m3u8|mp4|webm)(?:\?[^"'\\\s<>]*)?/gi;
-  while ((m = rawMediaRe.exec(html))) add(m[0]);
+  const unique = [...new Set(candidates)].filter(u => /^https?:\/\//i.test(u));
 
-  const unique = [...new Set(candidates)];
+  // Prefer actual video/media URLs, then iframe/embed URLs.
   const media = unique.find(u => /\.(?:m3u8|mp4|webm)(?:[?#].*)?$/i.test(u));
   if (media) return { media_src: media, is_iframe: false };
 
@@ -255,13 +248,7 @@ async function movieDetails(movieUrl) {
     episodes: [],
     media_src: player.media_src,
     is_iframe: player.is_iframe,
-    watch_url: watchLinks[0] || "",
-    debug: {
-      source_url: movieUrl,
-      upstream_status: res.status,
-      html_length: html.length,
-      watch_candidates: watchLinks.slice(0, 10)
-    }
+    watch_url: watchLinks[0] || ""
   };
 }
 
