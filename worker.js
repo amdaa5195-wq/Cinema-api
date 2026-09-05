@@ -1,4 +1,4 @@
-const VERSION = "3.2";
+const VERSION = "4.0";
 const AKWAM_ORIGIN = "https://akwam.ss";
 const ALLOWED_HOSTS = new Set(["akwam.ss", "www.akwam.ss"]);
 
@@ -131,9 +131,15 @@ function extractWatchLinks(html) {
 
   function add(raw) {
     if (!raw) return;
-    let s = String(raw).replace(/\\\//g, "/").replace(/\\u002F/gi, "/").replace(/&amp;/gi, "&").trim();
+    let s = String(raw)
+      .replace(/\\\//g, "/")
+      .replace(/\\u002F/gi, "/")
+      .replace(/&amp;/gi, "&")
+      .trim();
+
     const m = s.match(/(?:https?:\/\/[^"'\\\s<>]+|\/watch\/[^"'\\\s<>]+)/i);
     if (m) s = m[0];
+
     const u = absoluteUrl(s);
     if (u && /\/watch\//i.test(u) && !seen.has(u)) {
       seen.add(u);
@@ -141,8 +147,8 @@ function extractWatchLinks(html) {
     }
   }
 
-  const tagRe = /<(?:a|button)\b[^>]*>/gi;
   let m;
+  const tagRe = /<(?:a|button)\b[^>]*>/gi;
   while ((m = tagRe.exec(html))) {
     const tag = m[0];
     add(attr(tag, "href"));
@@ -190,28 +196,45 @@ function extractEpisodeLinks(html) {
 function extractEmbeddedMedia(html, baseUrl) {
   const candidates = [];
 
-  // iframe/embed/object sources
-  const tagRe = /<(?:iframe|embed|video|source|object)\b[^>]*>/gi;
-  let m;
-  while ((m = tagRe.exec(html))) {
-    const tag = m[0];
-    const src = attr(tag, "src") || attr(tag, "data-src") || attr(tag, "data");
-    const absolute = absoluteUrl(src, baseUrl);
-    if (absolute) candidates.push(absolute);
+  function add(raw) {
+    if (!raw) return;
+    const s = String(raw)
+      .replace(/\\\//g, "/")
+      .replace(/\\u002F/gi, "/")
+      .replace(/&amp;/gi, "&")
+      .trim();
+    const u = absoluteUrl(s, baseUrl);
+    if (u && /^https?:\/\//i.test(u)) candidates.push(u);
   }
 
-  // Common JS player configurations
-  const quotedUrlRe = /(?:file|src|source|url|videoUrl|streamUrl)\s*[:=]\s*["'](https?:\/\/[^"']+)["']/gi;
-  while ((m = quotedUrlRe.exec(html))) candidates.push(m[1]);
+  let m;
+  const tagRe = /<(?:iframe|embed|video|source|object)\b[^>]*>/gi;
+  while ((m = tagRe.exec(html))) {
+    const tag = m[0];
+    add(attr(tag, "src"));
+    add(attr(tag, "data-src"));
+    add(attr(tag, "data-url"));
+    add(attr(tag, "data-href"));
+    add(attr(tag, "data"));
+  }
 
-  const unique = [...new Set(candidates)].filter(u => /^https?:\/\//i.test(u));
+  const dataRe = /(?:data-file|data-video|data-player|data-embed|data-stream)=["']([^"']+)["']/gi;
+  while ((m = dataRe.exec(html))) add(m[1]);
 
-  // Prefer actual video/media URLs, then iframe/embed URLs.
-  const media = unique.find(u => /\.(?:m3u8|mp4|webm)(?:[?#].*)?$/i.test(u));
-  if (media) return { media_src: media, is_iframe: false };
+  const jsRe =
+    /(?:file|src|source|url|videoUrl|streamUrl|playerUrl|embedUrl|embed|video)\s*[:=]\s*["'](https?:\/\/[^"']+)["']/gi;
+  while ((m = jsRe.exec(html))) add(m[1]);
 
-  const frame = unique.find(u => /\/(?:embed|player|watch|stream)\b/i.test(u));
-  if (frame) return { media_src: frame, is_iframe: true };
+  const mediaRe =
+    /https?:\/\/[^"'\\\s<>]+?\.(?:m3u8|mp4|webm)(?:\?[^"'\\\s<>]*)?/gi;
+  while ((m = mediaRe.exec(html))) add(m[0]);
+
+  const unique = [...new Set(candidates)].filter(u => !/\/watch\//i.test(u));
+  const mediaUrl = unique.find(u => /\.(?:m3u8|mp4|webm)(?:[?#].*)?$/i.test(u));
+  if (mediaUrl) return { media_src: mediaUrl, is_iframe: false };
+
+  const frameUrl = unique.find(u => /\/(?:embed|player)\b/i.test(u));
+  if (frameUrl) return { media_src: frameUrl, is_iframe: true };
 
   return { media_src: "", is_iframe: false };
 }
@@ -226,19 +249,18 @@ async function movieDetails(movieUrl) {
     "Movie";
 
   const watchLinks = extractWatchLinks(html);
-
-  // The movie page's "مشاهدة" button points to /watch/... .
-  // Open that page and extract its real embedded player when available.
   let player = { media_src: "", is_iframe: false };
-  if (watchLinks[0]) {
-    const w = await fetchAkwam(watchLinks[0], movieUrl);
-    if (!challengePage(w.html)) {
-      player = extractEmbeddedMedia(w.html, watchLinks[0]);
-      // If the watch page exposes no nested player URL, use the watch page itself
-      // as an iframe target rather than returning an empty media_src.
-      if (!player.media_src) {
-        player = { media_src: watchLinks[0], is_iframe: true };
-      }
+  let playerSource = "";
+
+  for (const watchUrl of watchLinks.slice(0, 10)) {
+    const w = await fetchAkwam(watchUrl, movieUrl);
+    if (!w.res.ok || challengePage(w.html)) continue;
+
+    const extracted = extractEmbeddedMedia(w.html, watchUrl);
+    if (extracted.media_src) {
+      player = extracted;
+      playerSource = watchUrl;
+      break;
     }
   }
 
@@ -248,7 +270,15 @@ async function movieDetails(movieUrl) {
     episodes: [],
     media_src: player.media_src,
     is_iframe: player.is_iframe,
-    watch_url: watchLinks[0] || ""
+    watch_url: watchLinks[0] || "",
+    debug: {
+      source_url: movieUrl,
+      upstream_status: res.status,
+      html_length: html.length,
+      watch_candidates: watchLinks.slice(0, 10),
+      player_source: playerSource,
+      player_found: !!player.media_src
+    }
   };
 }
 
