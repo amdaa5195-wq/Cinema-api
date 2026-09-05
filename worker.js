@@ -1,4 +1,4 @@
-const VERSION = "3.1";
+const VERSION = "3.2";
 const AKWAM_ORIGIN = "https://akwam.ss";
 const ALLOWED_HOSTS = new Set(["akwam.ss", "www.akwam.ss"]);
 
@@ -128,15 +128,33 @@ async function fetchAkwam(url, referer = AKWAM_ORIGIN + "/") {
 function extractWatchLinks(html) {
   const out = [];
   const seen = new Set();
-  const re = /<a\b[^>]*href=["']([^"']*\/watch\/[^"'#?]+)["'][^>]*>/gi;
-  let m;
-  while ((m = re.exec(html))) {
-    const href = absoluteUrl(m[1]);
-    if (href && !seen.has(href)) {
-      seen.add(href);
-      out.push(href);
+
+  function add(raw) {
+    if (!raw) return;
+    let s = String(raw).replace(/\\\//g, "/").replace(/\\u002F/gi, "/").replace(/&amp;/gi, "&").trim();
+    const m = s.match(/(?:https?:\/\/[^"'\\\s<>]+|\/watch\/[^"'\\\s<>]+)/i);
+    if (m) s = m[0];
+    const u = absoluteUrl(s);
+    if (u && /\/watch\//i.test(u) && !seen.has(u)) {
+      seen.add(u);
+      out.push(u);
     }
   }
+
+  const tagRe = /<(?:a|button)\b[^>]*>/gi;
+  let m;
+  while ((m = tagRe.exec(html))) {
+    const tag = m[0];
+    add(attr(tag, "href"));
+    add(attr(tag, "data-href"));
+    add(attr(tag, "data-url"));
+    add(attr(tag, "data-link"));
+    add(attr(tag, "data-watch"));
+    add(attr(tag, "onclick"));
+  }
+
+  const rawRe = /(?:https?:)?(?:\\\/|\/)watch(?:\\\/|\/)[^"'\\\s<>]+/gi;
+  while ((m = rawRe.exec(html))) add(m[0]);
   return out;
 }
 
@@ -171,23 +189,31 @@ function extractEpisodeLinks(html) {
 function extractEmbeddedMedia(html, baseUrl) {
   const candidates = [];
 
-  // iframe/embed/object sources
+  function add(raw) {
+    if (!raw) return;
+    const s = String(raw).replace(/\\\//g, "/").replace(/\\u002F/gi, "/").replace(/&amp;/gi, "&").trim();
+    const u = absoluteUrl(s, baseUrl);
+    if (u && /^https?:\/\//i.test(u)) candidates.push(u);
+  }
+
   const tagRe = /<(?:iframe|embed|video|source|object)\b[^>]*>/gi;
   let m;
   while ((m = tagRe.exec(html))) {
     const tag = m[0];
-    const src = attr(tag, "src") || attr(tag, "data-src") || attr(tag, "data");
-    const absolute = absoluteUrl(src, baseUrl);
-    if (absolute) candidates.push(absolute);
+    add(attr(tag, "src"));
+    add(attr(tag, "data-src"));
+    add(attr(tag, "data-url"));
+    add(attr(tag, "data-href"));
+    add(attr(tag, "data"));
   }
 
-  // Common JS player configurations
-  const quotedUrlRe = /(?:file|src|source|url|videoUrl|streamUrl)\s*[:=]\s*["'](https?:\/\/[^"']+)["']/gi;
-  while ((m = quotedUrlRe.exec(html))) candidates.push(m[1]);
+  const quotedRe = /(?:file|src|source|url|videoUrl|streamUrl|playerUrl|embedUrl)\s*[:=]\s*["'](https?:\/\/[^"']+)["']/gi;
+  while ((m = quotedRe.exec(html))) add(m[1]);
 
-  const unique = [...new Set(candidates)].filter(u => /^https?:\/\//i.test(u));
+  const rawMediaRe = /https?:\/\/[^"'\\\s<>]+?\.(?:m3u8|mp4|webm)(?:\?[^"'\\\s<>]*)?/gi;
+  while ((m = rawMediaRe.exec(html))) add(m[0]);
 
-  // Prefer actual video/media URLs, then iframe/embed URLs.
+  const unique = [...new Set(candidates)];
   const media = unique.find(u => /\.(?:m3u8|mp4|webm)(?:[?#].*)?$/i.test(u));
   if (media) return { media_src: media, is_iframe: false };
 
@@ -229,7 +255,13 @@ async function movieDetails(movieUrl) {
     episodes: [],
     media_src: player.media_src,
     is_iframe: player.is_iframe,
-    watch_url: watchLinks[0] || ""
+    watch_url: watchLinks[0] || "",
+    debug: {
+      source_url: movieUrl,
+      upstream_status: res.status,
+      html_length: html.length,
+      watch_candidates: watchLinks.slice(0, 10)
+    }
   };
 }
 
